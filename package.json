@@ -1,0 +1,44 @@
+{
+  "name": "fiat-autodelsol-crm-backend",
+  "version": "1.0.0",
+  "description": "Backend API para Auto del Sol Fiat CRM - Sistema de gestión para concesionaria Fiat",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "setup": "node setup-db.js",
+    "test": "jest",
+    "build": "echo 'No build step required for Node.js backend'"
+  },
+  "dependencies": {
+    "axios": "^1.12.2",
+    "bcrypt": "^6.0.0",
+    "compression": "^1.7.4",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.18.2",
+    "helmet": "^7.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^2.1.1",
+    "mysql2": "^3.14.4",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "crm",
+    "leads",
+    "sales",
+    "concesionaria",
+    "fiat",
+    "autodelsol"
+  ],
+  "author": "Alluma Publicidad",
+  "license": "MIT"
+}
