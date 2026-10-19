@@ -189,11 +189,11 @@ setTimeout(() => {
 
 const PORT = process.env.PORT || 3001;
 
-server.listen(PORT, () => {
+require('./bootstrap')().finally(() => server.listen(PORT, () => {
   console.log(`\n🚀 Backend escuchando en puerto ${PORT}`);
   console.log(`⚡ WebSockets habilitados`);
   console.log(`📊 Reportes de actividad disponibles`);
   console.log(`🎯 Módulo de Metas activo`);
   console.log(`⚖️  Distribución ponderada activa`);
-  console.log(`📥 Webhooks activos: /api/webhooks/whatsapp-bot, /api/webhooks/zapier-formularios\n`);
-});
+  console.log(`📥 Webhooks activos: /api/webhooks/whatsapp-bot, /api/webhooks/zapier-formularios, /api/webhooks/sheets\n`);
+}));

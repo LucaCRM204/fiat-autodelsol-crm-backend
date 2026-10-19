@@ -2,9 +2,10 @@
  * ============================================
  * WEBHOOKS DE ENTRADA DE LEADS — Auto del Sol Fiat
  * ============================================
- * Dos endpoints:
+ * Endpoints:
  *   POST /api/webhooks/whatsapp-bot   -> leads que entran por el bot de WhatsApp
  *   POST /api/webhooks/zapier-formularios -> leads de formularios via Zapier
+ *   POST /api/webhooks/sheets         -> leads desde Google Sheets (Emanuel, Fast Lead)
  *
  * Ambos usan la MISMA lógica de asignación: primero intentan la
  * distribución ponderada (services/distribucion.service.js) si hay un
@@ -230,6 +231,89 @@ router.post('/zapier-formularios', intakeAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('[zapier-formularios] Error:', error);
+    res.status(500).json({ error: 'Error al procesar lead' });
+  }
+});
+
+// ========================================
+// POST /api/webhooks/sheets
+// Leads que llegan desde Google Sheets (Apps Script).
+// Cada sheet tiene su propia API key en LEAD_API_KEYS y el nombre del
+// proveedor define la fuente del lead:
+//   sheet-emanuel:CLAVE   -> fuente 'Emanuel'
+//   sheet-fastlead:CLAVE  -> fuente 'fast_lead'
+// Antiduplicado: si el mismo teléfono ya entró por la misma fuente en las
+// últimas 24 h, no se crea de nuevo (devuelve ok + duplicado: true).
+// ========================================
+const FUENTE_POR_PROVIDER = {
+  'sheet-emanuel': 'Emanuel',
+  'sheet-fastlead': 'fast_lead',
+};
+
+const limpiarTelefono = (t) => String(t || '').replace(/[^\d+]/g, '');
+
+router.post('/sheets', intakeAuth, async (req, res) => {
+  try {
+    const fuente = FUENTE_POR_PROVIDER[req.provider];
+    if (!fuente) {
+      return res.status(403).json({ error: `La key de "${req.provider}" no es de un sheet` });
+    }
+
+    const { nombre, modelo, notas, formaPago, email } = req.body;
+    const telefono = limpiarTelefono(req.body.telefono);
+
+    console.log(`[sheets:${fuente}] Recibido:`, JSON.stringify(req.body));
+
+    if (!nombre || !telefono) {
+      return res.status(400).json({
+        error: 'Nombre y telefono son requeridos',
+        received: { nombre, telefono }
+      });
+    }
+
+    const [dup] = await pool.execute(
+      `SELECT id FROM leads
+        WHERE fuente = ? AND telefono = ? AND created_at >= NOW() - INTERVAL 1 DAY
+        LIMIT 1`,
+      [fuente, telefono]
+    );
+    if (dup.length) {
+      console.log(`[sheets:${fuente}] Duplicado ${telefono} -> lead #${dup[0].id}`);
+      return res.json({ ok: true, duplicado: true, leadId: dup[0].id, fuente });
+    }
+
+    const assigned_to = await asignarVendedor(null, `sheets:${fuente}`);
+    if (!assigned_to) {
+      return res.status(500).json({ error: 'No hay vendedores activos para asignar' });
+    }
+
+    const notasFinal = [email ? `Mail: ${email}` : '', notas || ''].filter(Boolean).join(' | ');
+
+    const [result] = await pool.execute(
+      `INSERT INTO leads
+        (nombre, telefono, modelo, marca, formaPago, estado, fuente, notas, assigned_to, created_at, assigned_at)
+       VALUES
+        (?, ?, ?, 'fiat', ?, 'nuevo', ?, ?, ?, NOW(), NOW())`,
+      [
+        String(nombre).trim(),
+        telefono,
+        modelo || 'Consultar',
+        formaPago || 'Consultar',
+        fuente,
+        notasFinal,
+        assigned_to
+      ]
+    );
+
+    const [leadRows] = await pool.execute('SELECT * FROM leads WHERE id = ?', [result.insertId]);
+    const lead = leadRows[0] || null;
+
+    const io = req.app.get('io');
+    if (io && lead) io.emit('lead:created', lead);
+
+    res.json({ ok: true, leadId: result.insertId, assignedTo: assigned_to, fuente });
+  } catch (error) {
+    console.error('[sheets] Error:', error);
     res.status(500).json({ error: 'Error al procesar lead' });
   }
 });
