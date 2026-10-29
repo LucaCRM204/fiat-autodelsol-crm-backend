@@ -686,7 +686,16 @@ router.get('/pending-offers/me', authenticateToken, async (req, res) => {
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const updates = req.body;
+    const updates = { ...(req.body || {}) };
+
+    // Algunas pantallas mandan "observaciones" en vez de "notas"
+    if (updates.observaciones !== undefined && updates.notas === undefined) {
+      updates.notas = updates.observaciones;
+    }
+    delete updates.observaciones;
+    if (updates.notas !== undefined && updates.notas !== null) {
+      updates.notas = String(updates.notas);
+    }
 
     console.log(`📝 PUT /leads/${id} - Usuario: ${req.user.id} (${req.user.role})`);
     console.log(`📝 Updates recibidos:`, JSON.stringify(updates));
@@ -742,7 +751,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
 
       const newVendorId = updates.vendedor || updates.assigned_to;
 
-      if (newVendorId !== null && newVendorId !== undefined) {
+      if (newVendorId !== null && newVendorId !== undefined &&
+          Number(newVendorId) !== Number(leadActual.assigned_to)) {
         const hasPermission = await canAssignToVendor(req.user.id, req.user.role, newVendorId);
 
         if (!hasPermission) {
@@ -757,6 +767,10 @@ router.put('/:id', authenticateToken, async (req, res) => {
     for (const [key, value] of Object.entries(updates)) {
       if (!allowedFields.includes(key)) continue;
 
+      // Si el front manda el lead completo, ignorar lo que no cambió
+      const col = key === 'vendedor' ? 'assigned_to' : key;
+      if (key !== 'notas' && String(leadActual[col] ?? '') === String(value ?? '')) continue;
+
       if (key === 'marca' && value !== 'fiat') {
         return res.status(400).json({ error: 'Marca inválida' });
       }
@@ -767,7 +781,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
     }
 
     if (setClause.length === 0) {
-      return res.status(400).json({ error: 'No hay campos para actualizar' });
+      // Nada cambió: no es un error
+      return res.json({ ok: true, lead: mapLead(leadActual) });
     }
 
     values.push(id);
@@ -776,13 +791,28 @@ router.put('/:id', authenticateToken, async (req, res) => {
     const [beforeRows] = await pool.execute('SELECT * FROM leads WHERE id = ?', [id]);
     const beforeLead = beforeRows[0];
 
-    await pool.execute(
-      `UPDATE leads SET ${setClause.join(', ')}, updated_at = NOW() WHERE id = ?`,
-      values
-    );
+    try {
+      await pool.execute(
+        `UPDATE leads SET ${setClause.join(', ')}, updated_at = NOW() WHERE id = ?`,
+        values
+      );
+    } catch (e) {
+      // Base clonada sin columna updated_at: guardar igual
+      if (e.code === 'ER_BAD_FIELD_ERROR' && /updated_at/.test(e.message)) {
+        console.warn('⚠️ leads.updated_at no existe — guardando sin esa columna');
+        await pool.execute(`UPDATE leads SET ${setClause.join(', ')} WHERE id = ?`, values);
+      } else {
+        throw e;
+      }
+    }
 
     const [rows] = await pool.execute('SELECT * FROM leads WHERE id = ?', [id]);
     const afterLead = rows[0];
+
+    let userName = req.user?.name;
+    if (!userName && req.user?.id) {
+      try { const [u] = await pool.execute('SELECT name FROM users WHERE id = ?', [req.user.id]); userName = u[0]?.name; } catch (e) { }
+    }
 
     const trackFields = ['nombre', 'telefono', 'modelo', 'marca', 'formaPago', 'estado', 'fuente', 'notas', 'assigned_to'];
     for (const field of trackFields) {
@@ -795,15 +825,21 @@ router.put('/:id', authenticateToken, async (req, res) => {
             if (newVal) { const [u] = await pool.execute('SELECT name FROM users WHERE id = ?', [newVal]); newVal = u[0]?.name || newVal; }
           } catch (e) { }
         }
-        await logLeadHistory(id, 'cambio', FIELD_LABELS[field] || field, oldVal, newVal, req.user?.id, req.user?.name || 'Sistema');
+        await logLeadHistory(id, 'cambio', FIELD_LABELS[field] || field, oldVal, newVal, req.user?.id || null, userName || 'Sistema');
       }
     }
+
+    // Avisar a supervisores/gerentes conectados para que vean el cambio sin recargar
+    try {
+      const io = req.app.get('io');
+      if (io) io.emit('lead:updated', mapLead(afterLead));
+    } catch (e) { }
 
     console.log(`✅ Lead ${id} actualizado. Estado: ${afterLead.estado}`);
     res.json({ ok: true, lead: mapLead(afterLead) });
   } catch (error) {
     console.error('❌ Error PUT /leads/:id:', error);
-    res.status(500).json({ error: 'Error al actualizar lead' });
+    res.status(500).json({ error: 'Error al actualizar lead', detalle: error.code || error.message });
   }
 });
 

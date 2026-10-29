@@ -6,6 +6,19 @@ const { authenticateToken } = require('../middleware/auth');
 // NOTAS INTERNAS - Comentarios privados por lead
 // ========================================
 
+// El token del login no trae el nombre: se busca en la base
+async function datosUsuario(req) {
+  const id = req.user?.id || req.user?.uid || null;
+  let name = req.user?.name || null;
+  if (!name && id) {
+    try {
+      const [u] = await pool.execute('SELECT name FROM users WHERE id = ?', [id]);
+      name = u[0]?.name || null;
+    } catch (e) { }
+  }
+  return { id, name: name || 'Usuario' };
+}
+
 // GET todas las notas de un lead
 router.get('/leads/:leadId/notas', authenticateToken, async (req, res) => {
   try {
@@ -43,10 +56,12 @@ router.post('/leads/:leadId/notas', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Lead no encontrado' });
     }
 
+    const yo = await datosUsuario(req);
+
     const [result] = await pool.execute(
       `INSERT INTO notas_internas (lead_id, texto, usuario, user_id, timestamp)
        VALUES (?, ?, ?, ?, NOW())`,
-      [leadId, texto, req.user.name, req.user.id]
+      [leadId, texto.trim(), yo.name, yo.id]
     );
 
     const [nuevaNota] = await pool.execute(
@@ -57,12 +72,18 @@ router.post('/leads/:leadId/notas', authenticateToken, async (req, res) => {
       [result.insertId]
     );
 
-    console.log(`✅ Nota interna creada - Lead ${leadId}, Usuario: ${req.user.name}`);
+    console.log(`✅ Nota interna creada - Lead ${leadId}, Usuario: ${yo.name}`);
+
+    // Tiempo real para supervisores/gerentes
+    try {
+      const io = req.app.get('io');
+      if (io) io.emit('nota:created', { leadId: Number(leadId), nota: nuevaNota[0] });
+    } catch (e) { }
 
     res.json({ ok: true, nota: nuevaNota[0] });
   } catch (error) {
     console.error('Error POST /leads/:leadId/notas:', error);
-    res.status(500).json({ error: 'Error al crear nota' });
+    res.status(500).json({ error: 'Error al crear nota', detalle: error.code || error.message });
   }
 });
 
@@ -84,13 +105,14 @@ router.delete('/notas/:id', authenticateToken, async (req, res) => {
     const nota = notas[0];
 
     // Solo el creador o admin pueden eliminar
-    if (nota.user_id !== req.user.id && !['owner', 'director'].includes(req.user.role)) {
+    const yo = await datosUsuario(req);
+    if (Number(nota.user_id) !== Number(yo.id) && !['owner', 'director'].includes(req.user.role)) {
       return res.status(403).json({ error: 'No tienes permiso para eliminar esta nota' });
     }
 
     await pool.execute('DELETE FROM notas_internas WHERE id = ?', [id]);
 
-    console.log(`🗑️ Nota eliminada - ID ${id}, Usuario: ${req.user.name}`);
+    console.log(`🗑️ Nota eliminada - ID ${id}, Usuario: ${yo.name}`);
 
     res.json({ ok: true, message: 'Nota eliminada' });
   } catch (error) {
