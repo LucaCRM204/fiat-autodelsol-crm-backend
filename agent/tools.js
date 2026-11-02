@@ -402,7 +402,7 @@ TOOLS.push({
       'INSERT INTO notas_internas (lead_id, texto, usuario, user_id, timestamp) VALUES (?, ?, ?, ?, NOW())',
       [lead_id, `🤖 WhatsApp enviado al cliente: "${texto.slice(0, 400)}"`, ctx.agentUser.name, ctx.agentUser.id]);
     if (lead.assigned_to) await notify(lead.assigned_to, `Se le mandó un seguimiento por WhatsApp a ${lead.nombre}. Si contesta, seguís vos.`, lead_id);
-    return { ok: true, enviado_desde_usuario: userId };
+    return { ok: true, enviado_desde_usuario: userId, telefono: phone };
   },
 });
 
@@ -505,6 +505,7 @@ module.exports = {
   init, definitions, executeTool, approveAction, rejectAction,
   getLeadContext: (id) => BY_NAME.get_lead.run({ lead_id: id }),
   isReadOnly: (name) => !!BY_NAME[name]?.readOnly,
+  agentUserId: () => ctx.agentUser?.id,
   has: (name) => !!BY_NAME[name],
   ESTADOS, ESTADOS_CERRADOS,
 };

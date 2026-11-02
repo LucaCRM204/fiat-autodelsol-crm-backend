@@ -94,6 +94,108 @@ router.post('/actions/:id/reject', requireRole(VEN), async (req, res) => {
   }
 });
 
+/**
+ * Evidencia: busca en las tablas del CRM lo que la acción dejó registrado
+ * (nota, recordatorio, historial, reasignación, alerta, WhatsApp). No confía
+ * en lo que dice el agente: lee la base.
+ */
+router.get('/actions/:id/evidencia', requireRole(VEN), async (req, res) => {
+  try {
+    const pool = req.app.get('db');
+    const [[a]] = await pool.execute(
+      `SELECT a.*, d.name AS decidido_por FROM agent_actions a LEFT JOIN users d ON d.id = a.decided_by WHERE a.id = ?`,
+      [parseInt(req.params.id)]);
+    if (!a) return res.status(404).json({ ok: false, error: 'Acción no encontrada' });
+
+    const args = parse(a.args) || {};
+    const result = parse(a.result) || {};
+    const agentId = tools.agentUserId();
+    const cuando = a.executed_at || a.created_at;
+    const ventana = [cuando, cuando]; // ±5 min alrededor de la ejecución
+    const cerca = (col) => `${col} BETWEEN ? - INTERVAL 5 MINUTE AND ? + INTERVAL 5 MINUTE`;
+    const evidencia = [];
+    const push = (tipo, encontrado, detalle, fecha) => evidencia.push({ tipo, encontrado, detalle, fecha: fecha || null });
+
+    const [[lead]] = a.lead_id
+      ? await pool.execute(
+          `SELECT l.id, l.nombre, l.telefono, l.modelo, l.estado, l.assigned_to, u.name AS vendedor
+             FROM leads l LEFT JOIN users u ON u.id = l.assigned_to WHERE l.id = ?`, [a.lead_id])
+      : [[null]];
+
+    if (!['executed', 'approved'].includes(a.status)) {
+      return res.json({ ok: true, accion: { ...a, args, result }, lead: lead || null, evidencia,
+        aviso: a.status === 'pending' ? 'Todavía no se ejecutó: está esperando aprobación.' : a.status === 'rejected' ? 'Fue rechazada: no se hizo nada.' : 'Falló: no se hizo nada.' });
+    }
+
+    switch (a.tool) {
+      case 'add_nota': {
+        const [r] = await pool.execute('SELECT texto, usuario, timestamp FROM notas_internas WHERE id = ?', [result.nota_id || 0]);
+        push('Nota interna en el lead', !!r[0], r[0]?.texto, r[0]?.timestamp);
+        break;
+      }
+      case 'create_recordatorio': {
+        const [r] = await pool.execute(
+          "SELECT DATE_FORMAT(fecha, '%d/%m/%Y') AS fecha, TIME_FORMAT(hora, '%H:%i') AS hora, descripcion, completado FROM recordatorios WHERE id = ?",
+          [result.recordatorio_id || 0]);
+        push('Recordatorio en el calendario del vendedor', !!r[0],
+          r[0] && `${r[0].fecha} ${r[0].hora} — ${r[0].descripcion}${r[0].completado ? ' (ya completado)' : ''}`);
+        const [al] = await pool.execute(
+          `SELECT message, timestamp FROM alertas WHERE lead_id = ? AND type = 'recordatorio' AND ${cerca('timestamp')} ORDER BY id DESC LIMIT 1`,
+          [a.lead_id, ...ventana]);
+        push('Aviso al vendedor', !!al[0], al[0]?.message, al[0]?.timestamp);
+        break;
+      }
+      case 'notify_user': {
+        const [r] = await pool.execute(
+          `SELECT al.message, al.timestamp, al.is_read, u.name FROM alertas al JOIN users u ON u.id = al.user_id
+            WHERE al.user_id = ? AND al.message = ? AND ${cerca('al.timestamp')} ORDER BY al.id DESC LIMIT 1`,
+          [args.user_id || 0, String(args.mensaje || '').slice(0, 300), ...ventana]);
+        push(`Alerta a ${r[0]?.name || 'usuario #' + args.user_id}`, !!r[0],
+          r[0] && `${r[0].message}${r[0].is_read ? ' (ya la leyó)' : ' (sin leer)'}`, r[0]?.timestamp);
+        break;
+      }
+      case 'update_lead_estado': {
+        const [h] = await pool.execute(
+          `SELECT old_value, new_value, created_at FROM lead_history
+            WHERE lead_id = ? AND user_id = ? AND field_name = 'Estado' AND ${cerca('created_at')} ORDER BY id DESC LIMIT 1`,
+          [a.lead_id, agentId, ...ventana]);
+        push('Cambio de estado en el historial', !!h[0], h[0] && `${h[0].old_value} → ${h[0].new_value}`, h[0]?.created_at);
+        break;
+      }
+      case 'reassign_lead': {
+        const [r] = await pool.execute(
+          `SELECT f.name AS de, t.name AS a, r.created_at FROM lead_reassignment_log r
+             LEFT JOIN users f ON f.id = r.from_user_id LEFT JOIN users t ON t.id = r.to_user_id
+            WHERE r.lead_id = ? AND r.reason = 'agente_ia' AND ${cerca('r.created_at')} ORDER BY r.id DESC LIMIT 1`,
+          [a.lead_id, ...ventana]);
+        push('Reasignación registrada', !!r[0], r[0] && `De ${r[0].de || 'sin vendedor'} a ${r[0].a}`, r[0]?.created_at);
+        break;
+      }
+      case 'send_whatsapp': {
+        const [w] = await pool.execute(
+          `SELECT message, phone, created_at FROM wa_messages
+            WHERE (lead_id = ? OR phone = ?) AND sent_by = 'agente' AND ${cerca('created_at')} ORDER BY id DESC LIMIT 1`,
+          [a.lead_id, result.telefono || '', ...ventana]);
+        push('Mensaje de WhatsApp enviado', !!w[0], w[0] && `A ${w[0].phone}: ${w[0].message}`, w[0]?.created_at);
+        if (w[0]) {
+          const [resp] = await pool.execute(
+            `SELECT message, created_at FROM wa_messages WHERE phone = ? AND direction = 'in' AND created_at > ? ORDER BY id LIMIT 1`,
+            [w[0].phone, w[0].created_at]);
+          if (resp[0]) push('El cliente respondió', true, resp[0].message, resp[0].created_at);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+
+    res.json({ ok: true, accion: { ...a, args, result }, lead: lead || null, evidencia });
+  } catch (e) {
+    console.error('[agente] evidencia:', e);
+    res.status(500).json({ ok: false, error: 'No se pudo verificar la acción' });
+  }
+});
+
 router.get('/runs', requireRole(VEN), async (req, res) => {
   try {
     const pool = req.app.get('db');
