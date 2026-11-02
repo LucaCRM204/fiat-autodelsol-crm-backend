@@ -21,6 +21,8 @@ const DEFAULTS = {
   dias_laborales: '1,2,3,4,5,6', // 0 = domingo
   max_runs_dia: '300',
   tools_con_aprobacion: 'update_lead_estado,reassign_lead',
+  whatsapp_automatico: '0', // 1 = en modo auto, los WhatsApp a clientes salen sin aprobación
+  max_acciones_corrida: '2',
   instrucciones_extra: '',
 };
 
@@ -33,6 +35,8 @@ const VALIDATORS = {
   dias_laborales: (v) => /^[0-6](,[0-6])*$/.test(v),
   max_runs_dia: (v) => Number.isInteger(+v) && +v >= 0 && +v <= 5000,
   tools_con_aprobacion: (v) => /^[a-z_,]*$/.test(v),
+  whatsapp_automatico: (v) => ['0', '1', 'true', 'false'].includes(v),
+  max_acciones_corrida: (v) => Number.isInteger(+v) && +v >= 1 && +v <= 5,
   instrucciones_extra: (v) => typeof v === 'string' && v.length <= 2000,
 };
 
@@ -63,6 +67,8 @@ function parse(raw) {
     dias_laborales: raw.dias_laborales.split(',').map(Number),
     max_runs_dia: +raw.max_runs_dia,
     tools_con_aprobacion: raw.tools_con_aprobacion.split(',').map((s) => s.trim()).filter(Boolean),
+    whatsapp_automatico: raw.whatsapp_automatico === '1' || raw.whatsapp_automatico === 'true',
+    max_acciones_corrida: +raw.max_acciones_corrida,
     instrucciones_extra: raw.instrucciones_extra || '',
   };
 }
@@ -73,7 +79,7 @@ async function set(partial, userId) {
   const toSave = [];
   for (const [k, val] of Object.entries(partial || {})) {
     if (!(k in DEFAULTS)) continue;
-    const v = Array.isArray(val) ? val.join(',') : String(val ?? '');
+    const v = Array.isArray(val) ? val.join(',') : typeof val === 'boolean' ? (val ? '1' : '0') : String(val ?? '');
     if (!VALIDATORS[k](v)) { errors[k] = 'Valor inválido'; continue; }
     toSave.push([k, v]);
   }

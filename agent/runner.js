@@ -38,20 +38,22 @@ async function systemPrompt() {
   const aprob = cfg.mode === 'shadow'
     ? 'El sistema está en modo sombra: TODAS tus acciones de escritura quedan pendientes de aprobación de un gerente. Proponé igual lo que harías.'
     : `Estas acciones quedan pendientes de aprobación de un gerente: ${cfg.tools_con_aprobacion.join(', ') || 'ninguna'}. El resto se ejecuta al instante.`;
-  return `Sos el agente operativo del CRM de Auto del Sol Fiat, una concesionaria de Argentina. No hablás con clientes: trabajás para el equipo comercial (vendedores, supervisores, gerentes). Tu objetivo es que ningún lead se enfríe por falta de seguimiento.
+  return `Sos el agente operativo del CRM de Auto del Sol Fiat, una concesionaria de Argentina. No conversás con clientes (eso lo hacen el bot y los vendedores): trabajás para el equipo comercial y, como mucho, mandás seguimientos puntuales por WhatsApp. Tu objetivo es que ningún lead se enfríe por falta de seguimiento.
 
 Ahora es ${ahora.iso} (hora Argentina). Horario comercial: ${cfg.horario_inicio}:00 a ${cfg.horario_fin}:00. Nunca programes recordatorios fuera de ese horario ni en domingo.
 
 Estados posibles: ${tools.ESTADOS.join(', ')}. "rechazado_supervisor" no lo tocás nunca.
 
 Reglas:
-- Actuás solo con las herramientas. ${aprob}
-- Hacé lo mínimo que sirva: como máximo una nota y un recordatorio por corrida. Si no hace falta nada, no hagas nada y explicalo en finish.
+- Actuás solo con las herramientas. ${aprob}${cfg.mode !== 'shadow' && cfg.whatsapp_automatico ? ' Los WhatsApp a clientes salen directo, sin revisión: escribilos con cuidado.' : ' Los WhatsApp a clientes pasan por aprobación.'}
+- Hacé lo mínimo que sirva: máximo ${cfg.max_acciones_corrida} acciones por análisis, cada una con un fin distinto. Si no hace falta nada, no hagas nada y explicalo en finish.
+- Antes de actuar mirá "acciones_del_agente_7d" y las notas: no repitas algo que ya hiciste o propusiste con este lead.
+- create_recordatorio y reassign_lead ya le avisan al vendedor: no mandes además notify_user diciendo lo mismo. Una nota no tiene que repetir lo que dice el recordatorio.
 - Notas y alertas en español rioplatense, cortas, concretas y accionables. Nada de saludos ni relleno.
 - No inventes precios ni promociones: si los necesitás, usá list_planes.
 - No marques un lead como perdido o vendido por tu cuenta, salvo que un gerente lo pida en una instrucción manual.
 - No reasignes si el vendedor actual tuvo actividad en el lead en las últimas horas (llamadas, notas o WhatsApp con sent_by "vendedor").
-- send_whatsapp: solo si el lead ya chateó por WhatsApp, máximo uno por corrida, 2-3 líneas, tono natural de la concesionaria, sin precios inventados, sin firmar como una persona y sin decir que sos humano. Siempre pasa por aprobación.
+- send_whatsapp: solo si el lead ya chateó por WhatsApp, máximo uno por análisis, 2-3 líneas, tono natural de la concesionaria, retomando lo que consultó. Sin precios inventados (usá list_planes), sin firmar como una persona y, si te preguntan, no digas que sos humano.
 - Siempre terminá llamando a finish con un resumen de una o dos oraciones.${cfg.instrucciones_extra ? `\n\nInstrucciones del dueño:\n${cfg.instrucciones_extra}` : ''}`;
 }
 
@@ -91,6 +93,8 @@ async function run(event) {
     content: `${describir(payload)}\n\nContexto completo del lead #${event.lead_id}:\n${JSON.stringify(contexto)}`,
   }];
 
+  const cfgRun = await config.get();
+  let escrituras = 0;
   let steps = 0, inTok = 0, outTok = 0, summary = null;
   try {
     while (steps < MAX_STEPS) {
@@ -113,7 +117,13 @@ async function run(event) {
           results.push({ type: 'tool_result', tool_use_id: c.id, content: 'ok' });
           continue;
         }
-        const out = await tools.executeTool(c.name, c.input || {}, { source: 'agent', runId, eventId: event.id });
+        let out;
+        if (!tools.isReadOnly(c.name) && tools.has(c.name) && escrituras >= cfgRun.max_acciones_corrida) {
+          out = { error: `Límite de ${cfgRun.max_acciones_corrida} acciones por análisis alcanzado. Terminá con finish.` };
+        } else {
+          if (!tools.isReadOnly(c.name) && tools.has(c.name)) escrituras++;
+          out = await tools.executeTool(c.name, c.input || {}, { source: 'agent', runId, eventId: event.id });
+        }
         const text = JSON.stringify(out);
         results.push({
           type: 'tool_result',

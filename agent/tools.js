@@ -9,8 +9,8 @@
  *   - run(args,ctx): la implementación contra MySQL
  *
  * Las de escritura pasan por executeTool(), que aplica la política:
- *   alwaysApproval (WhatsApp a clientes), modo shadow, o herramienta en
- *   tools_con_aprobacion -> queda PENDIENTE
+ *   modo shadow, herramienta en tools_con_aprobacion, o WhatsApp a clientes
+ *   con whatsapp_automatico apagado -> queda PENDIENTE
  *   en agent_actions hasta que un gerente la apruebe desde el panel.
  *   resto -> se ejecuta y queda registrada como EXECUTED.
  */
@@ -104,6 +104,10 @@ const TOOLS = [
         'SELECT id, fecha, hora, descripcion FROM recordatorios WHERE lead_id = ? AND completado = 0 ORDER BY fecha, hora LIMIT 10', [lead_id]);
       const [cotizaciones] = await p.execute(
         'SELECT vehiculo, precio_contado, anticipo, created_at FROM cotizaciones WHERE lead_id = ? ORDER BY id DESC LIMIT 5', [lead_id]);
+      const [accionesAgente] = await p.execute(
+        `SELECT tool, status, args, created_at FROM agent_actions
+          WHERE lead_id = ? AND created_at > NOW() - INTERVAL 7 DAY AND status IN ('pending','executed','approved')
+          ORDER BY id DESC LIMIT 10`, [lead_id]);
       let whatsapp = [];
       if (tel.length >= 8) {
         const [wa] = await p.execute(
@@ -125,6 +129,8 @@ const TOOLS = [
         recordatorios_pendientes: recordatorios,
         whatsapp_ultimos: whatsapp, // sent_by: cliente | bot | vendedor (desde el celular) | agente
         cotizaciones,
+        // Lo que el agente ya hizo o propuso con este lead: no repetir
+        acciones_del_agente_7d: accionesAgente.map((a) => ({ tool: a.tool, estado: a.status, args: cut(typeof a.args === 'string' ? a.args : JSON.stringify(a.args), 200), cuando: a.created_at })),
       };
     },
   },
@@ -351,8 +357,8 @@ const TOOLS = [
 TOOLS.push({
   name: 'send_whatsapp',
   readOnly: false,
-  alwaysApproval: true,
-  description: 'Manda un mensaje de seguimiento al cliente por WhatsApp, desde el número del vendedor donde ya chatearon. SIEMPRE queda pendiente de aprobación de un gerente. Solo para leads que ya tienen charla de WhatsApp; máximo uno cada 48 h por lead. Corto (2-3 líneas), natural, sin inventar precios ni promociones, sin presentarte como una persona en particular.',
+  clienteFinal: true,
+  description: 'Manda un mensaje de seguimiento al cliente por WhatsApp, desde el número del vendedor donde ya chatearon. Según la configuración, sale directo o queda pendiente de aprobación. Solo para leads que ya tienen charla de WhatsApp; máximo uno cada 48 h por lead. Corto (2-3 líneas), natural, sin inventar precios ni promociones, sin presentarte como una persona en particular.',
   input_schema: {
     type: 'object',
     properties: {
@@ -415,9 +421,10 @@ function definitions({ includeFinish = false } = {}) {
 }
 
 async function needsApproval(name) {
-  if (BY_NAME[name]?.alwaysApproval) return true;
   const cfg = await config.get();
-  return cfg.mode === 'shadow' || cfg.tools_con_aprobacion.includes(name);
+  if (cfg.mode === 'shadow') return true;
+  if (BY_NAME[name]?.clienteFinal && !cfg.whatsapp_automatico) return true;
+  return cfg.tools_con_aprobacion.includes(name);
 }
 
 /**
@@ -435,6 +442,11 @@ async function executeTool(name, args = {}, meta = {}) {
   }
 
   const leadId = Number.isInteger(args.lead_id) ? args.lead_id : null;
+  if (leadId) {
+    const [dup] = await ctx.pool.execute(
+      "SELECT id FROM agent_actions WHERE lead_id = ? AND tool = ? AND status = 'pending' LIMIT 1", [leadId, name]);
+    if (dup.length) return { error: `Ya hay una acción ${name} pendiente para este lead (#${dup[0].id}). No la repitas.` };
+  }
   const base = [meta.runId || null, meta.eventId || null, leadId, name, JSON.stringify(args), meta.reason || args.motivo || null, meta.source || 'agent'];
 
   if (await needsApproval(name)) {
