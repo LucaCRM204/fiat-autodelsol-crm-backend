@@ -124,19 +124,22 @@ router.get('/', authenticateToken, async (req, res) => {
     // Solo mostrar sus propios leads aceptados
     const { role, id: userId } = req.user;
 
-    let query = 'SELECT * FROM leads';
+    // notas_count: cantidad de notas internas guardadas (el front lo muestra en el botón 📝)
+    const base = `
+      SELECT l.*, COALESCE(n.c, 0) AS notas_count
+        FROM leads l
+        LEFT JOIN (SELECT lead_id, COUNT(*) AS c FROM notas_internas GROUP BY lead_id) n ON n.lead_id = l.id`;
+    let query;
     let params = [];
 
     if (role === 'vendedor') {
-      query = `
-        SELECT * FROM leads 
-        WHERE (assigned_to = ? AND pending_acceptance = FALSE)
-           OR (pending_acceptance = FALSE AND assigned_to IS NULL)
-        ORDER BY created_at DESC
-      `;
+      query = `${base}
+        WHERE (l.assigned_to = ? AND l.pending_acceptance = FALSE)
+           OR (l.pending_acceptance = FALSE AND l.assigned_to IS NULL)
+        ORDER BY l.created_at DESC`;
       params = [userId];
     } else {
-      query = 'SELECT * FROM leads ORDER BY created_at DESC';
+      query = `${base} ORDER BY l.created_at DESC`;
     }
 
     const [rows] = await pool.execute(query, params);
