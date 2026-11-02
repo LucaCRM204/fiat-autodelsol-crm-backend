@@ -463,6 +463,20 @@ CREATE TABLE IF NOT EXISTS wa_vendors (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- ============================================
+-- NOTAS LEÍDAS: hasta cuándo leyó cada usuario las notas de cada lead.
+-- El botón 📝 muestra solo las notas nuevas de otros (sin leer).
+-- ============================================
+CREATE TABLE IF NOT EXISTS notas_leidas (
+  user_id INT NOT NULL,
+  lead_id INT NOT NULL,
+  leido_hasta DATETIME NOT NULL,
+  PRIMARY KEY (user_id, lead_id),
+  INDEX idx_notas_leidas_lead (lead_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
 -- SEED: usuario owner inicial
 -- Cambiar el email/password antes de correr en producción.
 -- La password acá es un placeholder EN TEXTO PLANO — hashearla con bcrypt

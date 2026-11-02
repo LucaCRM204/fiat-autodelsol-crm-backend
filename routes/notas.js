@@ -121,4 +121,22 @@ router.delete('/notas/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// POST marcar como leídas las notas de un lead (para el usuario actual)
+router.post('/leads/:leadId/notas/leidas', authenticateToken, async (req, res) => {
+  try {
+    const leadId = parseInt(req.params.leadId, 10);
+    if (!leadId) return res.status(400).json({ error: 'Lead inválido' });
+    await pool.execute(
+      `INSERT INTO notas_leidas (user_id, lead_id, leido_hasta) VALUES (?, ?, NOW())
+       ON DUPLICATE KEY UPDATE leido_hasta = NOW()`,
+      [req.user.id, leadId]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') return res.status(404).json({ error: 'Lead no encontrado' });
+    console.error('Error POST /notas/leidas:', error);
+    res.status(500).json({ error: 'Error al marcar notas como leídas' });
+  }
+});
+
 module.exports = router;

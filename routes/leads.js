@@ -124,20 +124,29 @@ router.get('/', authenticateToken, async (req, res) => {
     // Solo mostrar sus propios leads aceptados
     const { role, id: userId } = req.user;
 
-    // notas_count: cantidad de notas internas guardadas (el front lo muestra en el botón 📝)
+    // notas_count: notas internas guardadas
+    // notas_sin_leer: notas de OTROS posteriores a la última vez que este
+    // usuario abrió las notas del lead (el botón 📝 muestra este número)
     const base = `
-      SELECT l.*, COALESCE(n.c, 0) AS notas_count
+      SELECT l.*, COALESCE(n.c, 0) AS notas_count, COALESCE(u.c, 0) AS notas_sin_leer
         FROM leads l
-        LEFT JOIN (SELECT lead_id, COUNT(*) AS c FROM notas_internas GROUP BY lead_id) n ON n.lead_id = l.id`;
+        LEFT JOIN (SELECT lead_id, COUNT(*) AS c FROM notas_internas GROUP BY lead_id) n ON n.lead_id = l.id
+        LEFT JOIN (
+          SELECT ni.lead_id, COUNT(*) AS c
+            FROM notas_internas ni
+            LEFT JOIN notas_leidas nl ON nl.lead_id = ni.lead_id AND nl.user_id = ?
+           WHERE ni.user_id <> ? AND (nl.leido_hasta IS NULL OR ni.timestamp > nl.leido_hasta)
+           GROUP BY ni.lead_id
+        ) u ON u.lead_id = l.id`;
     let query;
-    let params = [];
+    let params = [userId, userId];
 
     if (role === 'vendedor') {
       query = `${base}
         WHERE (l.assigned_to = ? AND l.pending_acceptance = FALSE)
            OR (l.pending_acceptance = FALSE AND l.assigned_to IS NULL)
         ORDER BY l.created_at DESC`;
-      params = [userId];
+      params.push(userId);
     } else {
       query = `${base} ORDER BY l.created_at DESC`;
     }
