@@ -37,7 +37,7 @@ async function start({ pool, io }) {
     config.init(pool);
     tools.init({ pool, io, agentUser });
     runner.init(pool);
-    scanner.init(pool, agentUser.id);
+    scanner.init(pool, agentUser.id, io);
     worker.init(pool);
     listo = true;
 

@@ -14,6 +14,8 @@
  *   lead.estancado   -> contactado/interesado/negociacion/rellamado sin
  *                       actividad hace N días y sin recordatorio pendiente
  *   lead.respondio   -> el cliente contestó un seguimiento del agente
+ * Además (sin IA, aunque el agente esté apagado): cuando vence un
+ * recordatorio, le deja una alerta ⏰ al vendedor del lead.
  * "Actividad" incluye llamadas, notas y WhatsApp escrito por el vendedor.
  * Los dos últimos solo se detectan en horario comercial.
  */
@@ -21,7 +23,43 @@ const config = require('./config');
 
 let pool = null;
 let agentUserId = null;
-function init(p, uid) { pool = p; agentUserId = uid; }
+let io = null;
+function init(p, uid, socketIo) { pool = p; agentUserId = uid; io = socketIo || null; }
+
+/**
+ * Recordatorios que vencieron (fecha + hora en horario de Argentina) y todavía
+ * no avisaron: alerta al vendedor del lead (o a quien lo creó). Una sola vez
+ * por recordatorio; solo los de las últimas 48 h para no inundar con viejos.
+ */
+async function avisarRecordatoriosVencidos() {
+  const ahora = config.nowArg();
+  const [rows] = await pool.execute(
+    `SELECT r.id, r.lead_id, r.descripcion, TIME_FORMAT(r.hora, '%H:%i') AS hora,
+            COALESCE(l.assigned_to, r.created_by) AS destinatario, l.nombre
+       FROM recordatorios r
+       JOIN leads l ON l.id = r.lead_id
+      WHERE r.completado = 0
+        AND TIMESTAMP(r.fecha, r.hora) <= ?
+        AND TIMESTAMP(r.fecha, r.hora) > ? - INTERVAL 48 HOUR
+        AND NOT EXISTS (SELECT 1 FROM alertas a WHERE a.related_id = r.id AND a.type = 'recordatorio' AND a.message LIKE '⏰%')
+      LIMIT 100`,
+    [`${ahora.iso}:00`, `${ahora.iso}:00`]);
+  for (const r of rows) {
+    if (!r.destinatario) continue;
+    const desc = String(r.descripcion || '').replace(/^🤖\s*/, '');
+    const msg = `⏰ Es hora: ${r.nombre} — ${desc}`.slice(0, 500);
+    await pool.execute(
+      `INSERT INTO alertas (user_id, type, message, lead_id, related_id, timestamp) VALUES (?, 'recordatorio', ?, ?, ?, NOW())`,
+      [r.destinatario, msg, r.lead_id, r.id]);
+    if (io) {
+      io.emit('notification', {
+        id: `rec-${r.id}`, type: 'alert', title: '⏰ Recordatorio', message: msg,
+        timestamp: new Date().toISOString(), read: false, severity: 'info', leadId: r.lead_id, targetUserId: r.destinatario,
+      });
+    }
+  }
+  return rows.length;
+}
 
 async function enqueue(type, leadId, payload, dedupeKey, createdBy = null) {
   const [r] = await pool.execute(
@@ -143,6 +181,8 @@ async function tick() {
   if (corriendo) return;
   corriendo = true;
   try {
+    const vencidos = await avisarRecordatoriosVencidos().catch((e) => { console.error('[agente] recordatorios vencidos:', e.message); return 0; });
+    if (vencidos) console.log(`⏰ ${vencidos} recordatorios vencidos avisados`);
     const cfg = await config.get();
     const activo = cfg.mode !== 'off';
     const nuevos = await scanNuevos(activo);

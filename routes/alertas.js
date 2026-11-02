@@ -25,9 +25,12 @@ router.get('/', authenticateToken, async (req, res) => {
       query += ' AND a.is_read = FALSE';
     }
 
-    query += ' ORDER BY a.timestamp DESC LIMIT ?';
+    // LIMIT va inline (entero validado): con execute() y LIMIT ? MySQL 8 tira
+    // "Incorrect arguments to mysqld_stmt_execute"
+    const lim = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+    query += ` ORDER BY a.timestamp DESC LIMIT ${lim}`;
 
-    const [alertas] = await pool.execute(query, [req.user.id, parseInt(limit)]);
+    const [alertas] = await pool.execute(query, [req.user.id]);
 
     // Contar alertas no leídas
     const [count] = await pool.execute(
