@@ -9,11 +9,17 @@
  *   - run(args,ctx): la implementación contra MySQL
  *
  * Las de escritura pasan por executeTool(), que aplica la política:
- *   modo shadow, o herramienta en tools_con_aprobacion -> queda PENDIENTE
+ *   alwaysApproval (WhatsApp a clientes), modo shadow, o herramienta en
+ *   tools_con_aprobacion -> queda PENDIENTE
  *   en agent_actions hasta que un gerente la apruebe desde el panel.
  *   resto -> se ejecuta y queda registrada como EXECUTED.
  */
+const axios = require('axios');
 const config = require('./config');
+
+// Bot de WhatsApp de Fiat (droplet). Ver src/routes/agent.js del bot.
+const WA_BOT_URL = (process.env.WA_BOT_URL || 'https://api.crmalluma.com.ar/wa-fiat').replace(/\/$/, '');
+const WA_BOT_KEY = process.env.WA_BOT_KEY || '';
 
 const ESTADOS = [
   'nuevo', 'contactado', 'interesado', 'negociacion', 'vendido', 'perdido',
@@ -101,7 +107,7 @@ const TOOLS = [
       let whatsapp = [];
       if (tel.length >= 8) {
         const [wa] = await p.execute(
-          `SELECT direction, message, media_type, created_at FROM wa_messages
+          `SELECT direction, sent_by, message, media_type, created_at FROM wa_messages
             WHERE lead_id = ? OR phone LIKE ? ORDER BY id DESC LIMIT 20`, [lead_id, `%${tel}`]);
         whatsapp = wa.reverse().map((m) => ({ ...m, message: cut(m.message, 300) }));
       }
@@ -117,7 +123,7 @@ const TOOLS = [
         notas_internas: notas.map((n) => ({ ...n, texto: cut(n.texto, 400) })),
         llamadas,
         recordatorios_pendientes: recordatorios,
-        whatsapp_ultimos: whatsapp,
+        whatsapp_ultimos: whatsapp, // sent_by: cliente | bot | vendedor (desde el celular) | agente
         cotizaciones,
       };
     },
@@ -342,6 +348,58 @@ const TOOLS = [
   },
 ];
 
+TOOLS.push({
+  name: 'send_whatsapp',
+  readOnly: false,
+  alwaysApproval: true,
+  description: 'Manda un mensaje de seguimiento al cliente por WhatsApp, desde el número del vendedor donde ya chatearon. SIEMPRE queda pendiente de aprobación de un gerente. Solo para leads que ya tienen charla de WhatsApp; máximo uno cada 48 h por lead. Corto (2-3 líneas), natural, sin inventar precios ni promociones, sin presentarte como una persona en particular.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      lead_id: { type: 'integer' },
+      mensaje: { type: 'string', maxLength: 500 },
+    },
+    required: ['lead_id', 'mensaje'],
+  },
+  async run({ lead_id, mensaje }) {
+    const texto = String(mensaje || '').trim();
+    if (!texto) fail('El mensaje está vacío');
+    if (texto.length > 500) fail('Máximo 500 caracteres');
+    if (!WA_BOT_KEY) fail('Falta WA_BOT_KEY en el backend: no se puede mandar WhatsApp');
+    const cfg = await config.get();
+    if (!config.enHorario(cfg)) fail('Fuera del horario comercial: aprobalo dentro del horario');
+
+    const lead = await getLeadRow(lead_id);
+    if (!lead) fail(`No existe el lead #${lead_id}`);
+    if (ESTADOS_CERRADOS.includes(lead.estado)) fail(`El lead está en "${lead.estado}": no se le escribe`);
+
+    const tel = digits(lead.telefono).slice(-10);
+    const [ult] = await ctx.pool.execute(
+      `SELECT phone, session_id FROM wa_messages
+        WHERE (lead_id = ? OR phone LIKE ?) AND session_id LIKE 'user\\_%'
+        ORDER BY id DESC LIMIT 1`, [lead_id, `%${tel}`]);
+    if (!ult.length) fail('El lead no tiene charla de WhatsApp: no se le escribe en frío');
+    const { phone, session_id } = ult[0];
+    const userId = parseInt(String(session_id).replace('user_', ''), 10);
+
+    const [rec] = await ctx.pool.execute(
+      `SELECT COUNT(*) AS n FROM wa_messages WHERE phone = ? AND sent_by = 'agente' AND created_at > NOW() - INTERVAL 48 HOUR`, [phone]);
+    if (rec[0].n) fail('Ya se le mandó un seguimiento en las últimas 48 h');
+
+    try {
+      await axios.post(`${WA_BOT_URL}/api/agent/send`, { userId, phone, texto },
+        { headers: { 'x-agent-key': WA_BOT_KEY }, timeout: 20000 });
+    } catch (e) {
+      fail(`El bot no pudo mandarlo: ${e.response?.data?.error || e.message}`);
+    }
+    await ctx.pool.execute(
+      'INSERT INTO notas_internas (lead_id, texto, usuario, user_id, timestamp) VALUES (?, ?, ?, ?, NOW())',
+      [lead_id, `🤖 WhatsApp enviado al cliente: "${texto.slice(0, 400)}"`, ctx.agentUser.name, ctx.agentUser.id]);
+    if (lead.assigned_to) await notify(lead.assigned_to, `Se le mandó un seguimiento por WhatsApp a ${lead.nombre}. Si contesta, seguís vos.`, lead_id);
+    return { ok: true, enviado_desde_usuario: userId };
+  },
+});
+
 const BY_NAME = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 
 /** Herramienta interna para cerrar la corrida (no se expone por MCP). */
@@ -357,6 +415,7 @@ function definitions({ includeFinish = false } = {}) {
 }
 
 async function needsApproval(name) {
+  if (BY_NAME[name]?.alwaysApproval) return true;
   const cfg = await config.get();
   return cfg.mode === 'shadow' || cfg.tools_con_aprobacion.includes(name);
 }

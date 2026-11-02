@@ -13,6 +13,8 @@
  *                       (nivel 2: propone reasignar)
  *   lead.estancado   -> contactado/interesado/negociacion/rellamado sin
  *                       actividad hace N días y sin recordatorio pendiente
+ *   lead.respondio   -> el cliente contestó un seguimiento del agente
+ * "Actividad" incluye llamadas, notas y WhatsApp escrito por el vendedor.
  * Los dos últimos solo se detectan en horario comercial.
  */
 const config = require('./config');
@@ -74,6 +76,7 @@ async function scanSLA(cfg) {
         AND l.assigned_at > NOW() - INTERVAL 3 DAY
         AND NOT EXISTS (SELECT 1 FROM call_logs c WHERE c.lead_id = l.id AND c.created_at >= l.assigned_at)
         AND NOT EXISTS (SELECT 1 FROM notas_internas n WHERE n.lead_id = l.id AND n.user_id <> ? AND n.timestamp >= l.assigned_at)
+        AND NOT EXISTS (SELECT 1 FROM wa_messages w WHERE w.lead_id = l.id AND w.direction = 'out' AND w.sent_by = 'vendedor' AND w.created_at >= l.assigned_at)
       ORDER BY l.assigned_at LIMIT 50`, [sla, agentUserId]);
   let n = 0;
   for (const l of rows) {
@@ -104,11 +107,34 @@ async function scanEstancados(cfg) {
         AND NOT EXISTS (SELECT 1 FROM recordatorios r WHERE r.lead_id = l.id AND r.completado = 0 AND r.fecha >= CURDATE())
         AND NOT EXISTS (SELECT 1 FROM notas_internas n WHERE n.lead_id = l.id AND n.timestamp > NOW() - INTERVAL ? DAY)
         AND NOT EXISTS (SELECT 1 FROM call_logs c WHERE c.lead_id = l.id AND c.created_at > NOW() - INTERVAL ? DAY)
-      ORDER BY l.updated_at DESC LIMIT 20`, [d, d, d]);
+        AND NOT EXISTS (SELECT 1 FROM wa_messages w WHERE w.lead_id = l.id AND w.created_at > NOW() - INTERVAL ? DAY)
+      ORDER BY l.updated_at DESC LIMIT 20`, [d, d, d, d]);
   let n = 0;
   for (const l of rows) {
     if (await enqueue('lead.estancado', l.id, { estado: l.estado, dias: d }, `estancado:${l.id}:${l.semana}`)) n++;
   }
+  return n;
+}
+
+async function scanRespuestas(activo) {
+  let cursor = await config.getCursor('wa');
+  if (cursor === null) { await config.setCursor('wa', await maxId('wa_messages')); return 0; }
+  const [rows] = await pool.execute(
+    `SELECT id, phone, lead_id, message FROM wa_messages WHERE id > ? AND direction = 'in' ORDER BY id LIMIT 500`, [cursor]);
+  let n = 0;
+  for (const m of rows) {
+    cursor = m.id;
+    if (!activo) continue;
+    const [ag] = await pool.execute(
+      `SELECT id, lead_id FROM wa_messages
+        WHERE phone = ? AND sent_by = 'agente' AND id < ? AND created_at > NOW() - INTERVAL 7 DAY
+        ORDER BY id DESC LIMIT 1`, [m.phone, m.id]);
+    const leadId = m.lead_id || ag[0]?.lead_id;
+    if (!ag.length || !leadId) continue;
+    // Una sola vez por seguimiento: la primera respuesta después de ese mensaje
+    if (await enqueue('lead.respondio', leadId, { mensaje: String(m.message || '').slice(0, 300) }, `respondio:${ag[0].id}`)) n++;
+  }
+  if (rows.length) await config.setCursor('wa', cursor);
   return n;
 }
 
@@ -121,13 +147,14 @@ async function tick() {
     const activo = cfg.mode !== 'off';
     const nuevos = await scanNuevos(activo);
     const estados = await scanCambiosEstado(activo);
+    const respuestas = await scanRespuestas(activo);
     let sla = 0, estancados = 0;
     if (activo && config.enHorario(cfg)) {
       sla = await scanSLA(cfg);
       estancados = await scanEstancados(cfg);
     }
-    const total = nuevos + estados + sla + estancados;
-    if (total) console.log(`🤖 Eventos: ${nuevos} nuevos, ${estados} no contesta, ${sla} SLA, ${estancados} estancados`);
+    const total = nuevos + estados + respuestas + sla + estancados;
+    if (total) console.log(`🤖 Eventos: ${nuevos} nuevos, ${estados} no contesta, ${respuestas} respuestas, ${sla} SLA, ${estancados} estancados`);
   } catch (e) {
     console.error('[agente] scanner:', e.message);
   } finally {

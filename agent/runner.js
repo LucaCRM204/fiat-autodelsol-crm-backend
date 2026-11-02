@@ -23,7 +23,9 @@ const EVENTOS = {
       ? `El lead sigue en "nuevo" ${p.minutos} minutos después de asignado, sin llamadas ni notas, y el vendedor ya fue avisado. Proponé reasignarlo a un vendedor activo del mismo equipo con poca carga y que se haya conectado hoy, y avisale al supervisor del vendedor actual.`
       : `El lead lleva ${p.minutos} minutos en "nuevo" sin llamadas ni notas del vendedor. Avisale al vendedor con un mensaje corto y directo para que lo contacte ya.`,
   'lead.no_contesta': (p) =>
-    `El vendedor marcó el lead como "${p.estado}". Programá un recordatorio de rellamado en otra franja horaria (si antes se llamó a la mañana, a la tarde, y al revés). ${p.estado === 'no_contesta_3' ? 'Es el tercer intento: además de reprogramar, dejá una nota sugiriendo un mensaje por WhatsApp. No lo des por perdido.' : ''}`,
+    `El vendedor marcó el lead como "${p.estado}". Programá un recordatorio de rellamado en otra franja horaria (si antes se llamó a la mañana, a la tarde, y al revés).${p.estado !== 'no_contesta_1' ? ' Si el lead tiene charla de WhatsApp, proponé además un mensaje corto de seguimiento con send_whatsapp retomando lo que había consultado. No lo des por perdido.' : ''}`,
+  'lead.respondio': (p) =>
+    `El cliente contestó por WhatsApp el seguimiento que se le mandó: "${p.mensaje}". Avisale al vendedor asignado con notify_user, en una línea, qué respondió y qué conviene hacer ahora. No le mandes otro WhatsApp.`,
   'lead.estancado': (p) =>
     `El lead está en "${p.estado}" sin movimiento hace ${p.dias} días y no tiene recordatorios pendientes. Mirá el historial y los mensajes, y dejale al vendedor un próximo paso concreto (recordatorio con fecha y una nota con qué decir).`,
   manual: (p) =>
@@ -48,7 +50,8 @@ Reglas:
 - Notas y alertas en español rioplatense, cortas, concretas y accionables. Nada de saludos ni relleno.
 - No inventes precios ni promociones: si los necesitás, usá list_planes.
 - No marques un lead como perdido o vendido por tu cuenta, salvo que un gerente lo pida en una instrucción manual.
-- No reasignes si el vendedor actual tuvo actividad en el lead en las últimas horas.
+- No reasignes si el vendedor actual tuvo actividad en el lead en las últimas horas (llamadas, notas o WhatsApp con sent_by "vendedor").
+- send_whatsapp: solo si el lead ya chateó por WhatsApp, máximo uno por corrida, 2-3 líneas, tono natural de la concesionaria, sin precios inventados, sin firmar como una persona y sin decir que sos humano. Siempre pasa por aprobación.
 - Siempre terminá llamando a finish con un resumen de una o dos oraciones.${cfg.instrucciones_extra ? `\n\nInstrucciones del dueño:\n${cfg.instrucciones_extra}` : ''}`;
 }
 

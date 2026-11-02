@@ -84,6 +84,17 @@ const TABLES = [
 async function ensureSchema(pool) {
   for (const sql of TABLES) await pool.query(sql);
 
+  // wa_messages.sent_by (bot / vendedor / agente / cliente): la escribe el bot
+  // de WhatsApp actualizado. El primero de los dos que arranca la crea.
+  const [col] = await pool.query(
+    `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wa_messages' AND COLUMN_NAME = 'sent_by'`);
+  if (!col[0].n) {
+    await pool.query('ALTER TABLE wa_messages ADD COLUMN sent_by VARCHAR(20) NULL AFTER direction').catch((e) => {
+      if (e.code !== 'ER_DUP_FIELDNAME') throw e;
+    });
+  }
+
   const [rows] = await pool.execute('SELECT id FROM users WHERE email = ? LIMIT 1', [AGENT_EMAIL]);
   if (rows.length) return { id: rows[0].id, name: AGENT_NAME };
 
