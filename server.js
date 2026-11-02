@@ -2,6 +2,7 @@
  * ============================================
  * SERVER.JS — AUTO DEL SOL CRM (Fiat)
  * Con WebSockets en tiempo real, sin módulo de scoring
+ * + Agente IA (carpeta agent/): eventos, bandeja de aprobación y MCP
  * ============================================
  */
 const express = require('express');
@@ -129,6 +130,10 @@ app.use('/api/cotizaciones', require('./routes/cotizaciones'));
 app.use('/api/alertas', require('./routes/alertas'));
 if (usersRouter) app.use('/api/users', usersRouter);
 
+// Agente IA: bandeja/aprobaciones en /api/agent y servidor MCP en /mcp
+const agent = require('./agent');
+agent.mount(app);
+
 // Health check
 app.get('/api/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
@@ -189,11 +194,13 @@ setTimeout(() => {
 
 const PORT = process.env.PORT || 3001;
 
-require('./bootstrap')().finally(() => server.listen(PORT, () => {
-  console.log(`\n🚀 Backend escuchando en puerto ${PORT}`);
-  console.log(`⚡ WebSockets habilitados`);
-  console.log(`📊 Reportes de actividad disponibles`);
-  console.log(`🎯 Módulo de Metas activo`);
-  console.log(`⚖️  Distribución ponderada activa`);
-  console.log(`📥 Webhooks activos: /api/webhooks/whatsapp-bot, /api/webhooks/zapier-formularios, /api/webhooks/sheets\n`);
-}));
+require('./bootstrap')()
+  .finally(() => agent.start({ pool, io }))
+  .finally(() => server.listen(PORT, () => {
+    console.log(`\n🚀 Backend escuchando en puerto ${PORT}`);
+    console.log(`⚡ WebSockets habilitados`);
+    console.log(`📊 Reportes de actividad disponibles`);
+    console.log(`🎯 Módulo de Metas activo`);
+    console.log(`⚖️  Distribución ponderada activa`);
+    console.log(`📥 Webhooks activos: /api/webhooks/whatsapp-bot, /api/webhooks/zapier-formularios, /api/webhooks/sheets\n`);
+  }));
