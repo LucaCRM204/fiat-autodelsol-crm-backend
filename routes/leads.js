@@ -160,41 +160,6 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// GET un lead
-router.get('/:id', authenticateToken, async (req, res) => {
-  try {
-    const [rows] = await pool.execute('SELECT * FROM leads WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Lead no encontrado' });
-    }
-
-    const lead = rows[0];
-    const { role, id: userId } = req.user;
-
-    // Si es vendedor y el lead está pendiente de aceptación para ÉL, no mostrar datos
-    if (role === 'vendedor' && lead.pending_acceptance && lead.current_offer_to === userId) {
-      return res.json({
-        ok: true,
-        lead: {
-          id: lead.id,
-          pending_acceptance: true,
-          message: 'Debés aceptar este lead para ver los datos'
-        }
-      });
-    }
-
-    // Si es vendedor y el lead no es suyo, no mostrar
-    if (role === 'vendedor' && lead.assigned_to !== userId && lead.pending_acceptance) {
-      return res.status(403).json({ error: 'No tenés acceso a este lead' });
-    }
-
-    res.json({ ok: true, lead: mapLead(lead) });
-  } catch (error) {
-    console.error('Error GET /leads/:id:', error);
-    res.status(500).json({ error: 'Error al obtener lead' });
-  }
-});
-
 // GET estado del round-robin
 router.get('/round-robin/status', authenticateToken, async (req, res) => {
   try {
@@ -280,6 +245,41 @@ router.get('/unassigned', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ error: 'Error al obtener leads sin asignar' });
+  }
+});
+
+// GET un lead (va después de /distribution y /unassigned: si no, /:id las tapa)
+router.get('/:id', authenticateToken, async (req, res) => {
+  try {
+    const [rows] = await pool.execute('SELECT * FROM leads WHERE id = ?', [req.params.id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Lead no encontrado' });
+    }
+
+    const lead = rows[0];
+    const { role, id: userId } = req.user;
+
+    // Si es vendedor y el lead está pendiente de aceptación para ÉL, no mostrar datos
+    if (role === 'vendedor' && lead.pending_acceptance && lead.current_offer_to === userId) {
+      return res.json({
+        ok: true,
+        lead: {
+          id: lead.id,
+          pending_acceptance: true,
+          message: 'Debés aceptar este lead para ver los datos'
+        }
+      });
+    }
+
+    // Si es vendedor y el lead no es suyo, no mostrar
+    if (role === 'vendedor' && lead.assigned_to !== userId && lead.pending_acceptance) {
+      return res.status(403).json({ error: 'No tenés acceso a este lead' });
+    }
+
+    res.json({ ok: true, lead: mapLead(lead) });
+  } catch (error) {
+    console.error('Error GET /leads/:id:', error);
+    res.status(500).json({ error: 'Error al obtener lead' });
   }
 });
 

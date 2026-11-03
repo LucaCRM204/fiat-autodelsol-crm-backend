@@ -323,6 +323,10 @@ router.get('/reassignments', authenticateToken, requireRole(['owner', 'director'
     const { limit = 50 } = req.query;
     const pool = req.app.get('db');
 
+    // LIMIT va inline (entero validado), igual que en alertas.js: con execute()
+    // y LIMIT ? MySQL >= 8.0.22 tira "Incorrect arguments to mysqld_stmt_execute"
+    const lim = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
+
     const [reassignments] = await pool.execute(`
       SELECT 
         r.id,
@@ -340,8 +344,8 @@ router.get('/reassignments', authenticateToken, requireRole(['owner', 'director'
       LEFT JOIN users uf ON r.from_user_id = uf.id
       LEFT JOIN users ut ON r.to_user_id = ut.id
       ORDER BY r.created_at DESC
-      LIMIT ?
-    `, [parseInt(limit)]);
+      LIMIT ${lim}
+    `);
 
     res.json({ ok: true, reassignments });
   } catch (error) {

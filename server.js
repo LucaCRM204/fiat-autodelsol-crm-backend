@@ -20,6 +20,9 @@ const { initSocketServer } = require('./socket-server');
 // Importar pool de MySQL
 const pool = require('./db');
 
+// Auth para las rutas que antes no la tenían (users, calls, metas)
+const { authenticateToken } = require('./middleware/auth');
+
 // Importar rutas
 const authRouter = require('./routes/auth');
 const leadsRouter = require('./routes/leads');
@@ -122,14 +125,14 @@ app.use('/api/leads', leadsRouter);
 app.use('/api/presupuestos', require('./routes/presupuestos'));
 app.use('/api/webhooks', require('./routes/webhooks')); // whatsapp-bot y zapier-formularios (emiten sockets internamente)
 app.use('/api/activity', activityRouter);
-app.use('/api/metas', metasRouter(pool));
+app.use('/api/metas', authenticateToken, metasRouter(pool));
 app.use('/api/distribution', require('./routes/distribution'));
-app.use('/api/calls', require('./routes/calls'));
+app.use('/api/calls', authenticateToken, require('./routes/calls'));
 app.use('/api/notas', require('./routes/notas'));
 app.use('/api/recordatorios', require('./routes/recordatorios'));
 app.use('/api/cotizaciones', require('./routes/cotizaciones'));
 app.use('/api/alertas', require('./routes/alertas'));
-if (usersRouter) app.use('/api/users', usersRouter);
+if (usersRouter) app.use('/api/users', authenticateToken, usersRouter);
 
 // Tareas que supervisores/gerentes asignan a vendedores
 app.use('/api/tareas', require('./routes/tareas'));
