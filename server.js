@@ -43,7 +43,8 @@ app.set('db', pool);
 app.set('trust proxy', 1);
 
 app.use(helmet());
-app.use(express.json());
+// 15 MB: el chat de WhatsApp del CRM manda imágenes en base64
+app.use(express.json({ limit: '15mb' }));
 app.use(cookieParser());
 app.use(compression());
 app.use(morgan('dev'));
@@ -129,6 +130,9 @@ app.use('/api/recordatorios', require('./routes/recordatorios'));
 app.use('/api/cotizaciones', require('./routes/cotizaciones'));
 app.use('/api/alertas', require('./routes/alertas'));
 if (usersRouter) app.use('/api/users', usersRouter);
+
+// Chat de WhatsApp de cada lead (lee la base y manda por el bot)
+app.use('/api/whatsapp', require('./routes/whatsapp'));
 
 // Agente IA: bandeja/aprobaciones en /api/agent y servidor MCP en /mcp
 const agent = require('./agent');
