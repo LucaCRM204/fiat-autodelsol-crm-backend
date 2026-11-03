@@ -463,6 +463,32 @@ CREATE TABLE IF NOT EXISTS wa_vendors (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- ============================================
+-- TAREAS ASIGNADAS: las que un supervisor/gerente le asigna a un vendedor
+-- sobre un lead ("Asignar Tareas"). Las automáticas no se guardan: se
+-- calculan en el front según el estado del lead.
+-- ============================================
+CREATE TABLE IF NOT EXISTS tareas_asignadas (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  lead_id INT NOT NULL,
+  asignado_a INT NOT NULL,
+  created_by INT NOT NULL,
+  tipo VARCHAR(30) NOT NULL DEFAULT 'seguimiento',
+  prioridad ENUM('alta','media','baja') NOT NULL DEFAULT 'media',
+  fecha_limite DATETIME NOT NULL, -- hora de Argentina, tal como se cargó
+  descripcion TEXT NOT NULL,
+  completada TINYINT(1) DEFAULT 0,
+  completada_at DATETIME NULL,
+  completada_por INT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_tareas_asignado (asignado_a, completada),
+  INDEX idx_tareas_creador (created_by),
+  INDEX idx_tareas_lead (lead_id),
+  FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+  FOREIGN KEY (asignado_a) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
 -- NOTAS LEÍDAS: hasta cuándo leyó cada usuario las notas de cada lead.
 -- El botón 📝 muestra solo las notas nuevas de otros (sin leer).
 -- ============================================

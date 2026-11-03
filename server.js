@@ -131,6 +131,9 @@ app.use('/api/cotizaciones', require('./routes/cotizaciones'));
 app.use('/api/alertas', require('./routes/alertas'));
 if (usersRouter) app.use('/api/users', usersRouter);
 
+// Tareas que supervisores/gerentes asignan a vendedores
+app.use('/api/tareas', require('./routes/tareas'));
+
 // Chat de WhatsApp de cada lead (lee la base y manda por el bot)
 app.use('/api/whatsapp', require('./routes/whatsapp'));
 
