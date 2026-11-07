@@ -23,6 +23,8 @@ const DEFAULTS = {
   tools_con_aprobacion: 'update_lead_estado,reassign_lead',
   whatsapp_automatico: '0', // 1 = en modo auto, los WhatsApp a clientes salen sin aprobación
   max_acciones_corrida: '2',
+  // Leads en estos estados el agente no los toca (ni notas, ni reasignar, ni WhatsApp)
+  estados_protegidos: 'interesado,negociacion,vendido',
   instrucciones_extra: '',
 };
 
@@ -37,6 +39,7 @@ const VALIDATORS = {
   tools_con_aprobacion: (v) => /^[a-z_,]*$/.test(v),
   whatsapp_automatico: (v) => ['0', '1', 'true', 'false'].includes(v),
   max_acciones_corrida: (v) => Number.isInteger(+v) && +v >= 1 && +v <= 5,
+  estados_protegidos: (v) => /^[a-z_0-9,]*$/.test(v),
   instrucciones_extra: (v) => typeof v === 'string' && v.length <= 2000,
 };
 
@@ -69,6 +72,7 @@ function parse(raw) {
     tools_con_aprobacion: raw.tools_con_aprobacion.split(',').map((s) => s.trim()).filter(Boolean),
     whatsapp_automatico: raw.whatsapp_automatico === '1' || raw.whatsapp_automatico === 'true',
     max_acciones_corrida: +raw.max_acciones_corrida,
+    estados_protegidos: raw.estados_protegidos.split(',').map((s) => s.trim()).filter(Boolean),
     instrucciones_extra: raw.instrucciones_extra || '',
   };
 }

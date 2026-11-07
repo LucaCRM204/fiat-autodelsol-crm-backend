@@ -135,10 +135,12 @@ async function scanSLA(cfg) {
 
 async function scanEstancados(cfg) {
   const d = cfg.estancado_dias;
+  const estados = ['contactado', 'interesado', 'negociacion', 'rellamado'].filter((e) => !cfg.estados_protegidos.includes(e));
+  if (!estados.length) return 0;
   const [rows] = await pool.execute(
     `SELECT l.id, l.estado, YEARWEEK(NOW(), 1) AS semana
        FROM leads l
-      WHERE l.estado IN ('contactado','interesado','negociacion','rellamado')
+      WHERE l.estado IN (${estados.map(() => '?').join(',')})
         AND l.assigned_to IS NOT NULL
         AND l.updated_at < NOW() - INTERVAL ? DAY
         AND l.updated_at > NOW() - INTERVAL 45 DAY
@@ -146,7 +148,7 @@ async function scanEstancados(cfg) {
         AND NOT EXISTS (SELECT 1 FROM notas_internas n WHERE n.lead_id = l.id AND n.timestamp > NOW() - INTERVAL ? DAY)
         AND NOT EXISTS (SELECT 1 FROM call_logs c WHERE c.lead_id = l.id AND c.created_at > NOW() - INTERVAL ? DAY)
         AND NOT EXISTS (SELECT 1 FROM wa_messages w WHERE w.lead_id = l.id AND w.created_at > NOW() - INTERVAL ? DAY)
-      ORDER BY l.updated_at DESC LIMIT 20`, [d, d, d, d]);
+      ORDER BY l.updated_at DESC LIMIT 20`, [...estados, d, d, d, d]);
   let n = 0;
   for (const l of rows) {
     if (await enqueue('lead.estancado', l.id, { estado: l.estado, dias: d }, `estancado:${l.id}:${l.semana}`)) n++;

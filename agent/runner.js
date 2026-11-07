@@ -20,7 +20,7 @@ const EVENTOS = {
     `Entró un lead nuevo${p.fuente ? ` por ${p.fuente}` : ''}. Revisalo: ¿es duplicado de otro lead reciente (buscá por teléfono)? ¿El vendedor asignado está activo? ¿Faltan datos clave (modelo, forma de pago)? Dejale al vendedor una nota corta con el contexto útil y el primer paso concreto.`,
   'lead.sla_nuevo': (p) =>
     p.nivel === 2
-      ? `El lead sigue en "nuevo" ${p.minutos} minutos después de asignado, sin llamadas ni notas, y el vendedor ya fue avisado. Proponé reasignarlo a un vendedor activo del mismo equipo con poca carga y que se haya conectado hoy, y avisale al supervisor del vendedor actual.`
+      ? `El lead sigue en "nuevo" ${p.minutos} minutos después de asignado, sin llamadas ni notas, y el vendedor ya fue avisado. Reasignalo con reassign_lead (el sistema elige el próximo vendedor del equipo por round robin) y avisale al supervisor del vendedor actual.`
       : `El lead lleva ${p.minutos} minutos en "nuevo" sin llamadas ni notas del vendedor. Avisale al vendedor con un mensaje corto y directo para que lo contacte ya.`,
   'lead.no_contesta': (p) =>
     `El vendedor marcó el lead como "${p.estado}". Programá un recordatorio de rellamado en otra franja horaria (si antes se llamó a la mañana, a la tarde, y al revés).${p.estado !== 'no_contesta_1' ? ' Si el lead tiene charla de WhatsApp, proponé además un mensaje corto de seguimiento con send_whatsapp retomando lo que había consultado. No lo des por perdido.' : ''}`,
@@ -53,13 +53,16 @@ Reglas:
 - No inventes precios ni promociones: si los necesitás, usá list_planes.
 - No marques un lead como perdido o vendido por tu cuenta, salvo que un gerente lo pida en una instrucción manual.
 - No reasignes si el vendedor actual tuvo actividad en el lead en las últimas horas (llamadas, notas o WhatsApp con sent_by "vendedor").
+- reassign_lead elige solo el próximo vendedor por round robin: no indiques a quién, solo el motivo.
+- Leads en ${cfg.estados_protegidos.join(', ') || 'ningún estado'} no se tocan: ni notas, ni recordatorios, ni reasignar, ni WhatsApp, ni cambio de estado.
 - send_whatsapp: solo si el lead ya chateó por WhatsApp, máximo uno por análisis, 2-3 líneas, tono natural de la concesionaria, retomando lo que consultó. Sin precios inventados (usá list_planes), sin firmar como una persona y, si te preguntan, no digas que sos humano.
 - Siempre terminá llamando a finish con un resumen de una o dos oraciones.${cfg.instrucciones_extra ? `\n\nInstrucciones del dueño:\n${cfg.instrucciones_extra}` : ''}`;
 }
 
 /** Algunos eventos dejan de tener sentido si el lead cambió mientras esperaban en la cola. */
-function sigueVigente(type, payload, lead) {
+function sigueVigente(type, payload, lead, cfg) {
   if (!lead) return 'El lead ya no existe';
+  if (cfg.estados_protegidos.includes(lead.estado)) return `El lead está en "${lead.estado}" (estado protegido): el agente no lo toca`;
   if (type === 'lead.sla_nuevo' && lead.estado !== 'nuevo') return `El lead ya pasó a "${lead.estado}"`;
   if (type === 'lead.sla_nuevo' && payload.assigned_to && lead.vendedor?.id !== payload.assigned_to) return 'El lead ya fue reasignado';
   if (type === 'lead.no_contesta' && lead.estado !== payload.estado) return `El lead ya pasó a "${lead.estado}"`;
@@ -75,7 +78,7 @@ function sigueVigente(type, payload, lead) {
 async function run(event) {
   const payload = (typeof event.payload === 'string' ? JSON.parse(event.payload || '{}') : event.payload) || {};
   const contexto = await tools.getLeadContext(event.lead_id).catch(() => null);
-  const motivoSkip = sigueVigente(event.type, payload, contexto?.lead);
+  const motivoSkip = sigueVigente(event.type, payload, contexto?.lead, await config.get());
   if (motivoSkip) return { status: 'skipped', reason: motivoSkip };
 
   const describir = EVENTOS[event.type];

@@ -52,6 +52,51 @@ async function logHistory(leadId, field, oldVal, newVal) {
   );
 }
 
+/** Leads en estados protegidos (config.estados_protegidos): el agente no los modifica. */
+async function asegurarNoProtegido(lead) {
+  const cfg = await config.get();
+  if (lead && cfg.estados_protegidos.includes(lead.estado)) {
+    fail(`El lead #${lead.id} está en "${lead.estado}": es un estado protegido, el agente no lo toca`);
+  }
+}
+
+/**
+ * Próximo vendedor por round robin, nunca el actual.
+ * Pool: vendedores activos del mismo supervisor; si no hay otros, del mismo
+ * gerente; si no, todos los vendedores activos. El puntero se guarda por
+ * pool en agent_config (rr_<clave>) para que el reparto sea parejo.
+ */
+async function proximoVendedorRoundRobin(lead) {
+  const p = ctx.pool;
+  const actual = lead.assigned_to || 0;
+  const pools = [];
+  if (lead.vendedor_reporta_a) {
+    pools.push({ clave: `sup${lead.vendedor_reporta_a}`, where: 'reportsTo = ?', params: [lead.vendedor_reporta_a] });
+    const [[sup]] = await p.execute('SELECT reportsTo FROM users WHERE id = ?', [lead.vendedor_reporta_a]);
+    if (sup?.reportsTo) {
+      pools.push({
+        clave: `ger${sup.reportsTo}`,
+        where: '(reportsTo = ? OR reportsTo IN (SELECT id FROM users WHERE reportsTo = ?))',
+        params: [sup.reportsTo, sup.reportsTo],
+      });
+    }
+  }
+  pools.push({ clave: 'todos', where: '1 = 1', params: [] });
+
+  for (const pool of pools) {
+    const [cands] = await p.execute(
+      `SELECT id, name FROM users
+        WHERE role = 'vendedor' AND active = 1 AND id <> ? AND ${pool.where}
+        ORDER BY id`, [actual, ...pool.params]);
+    if (!cands.length) continue;
+    const ultimo = Number(await config.getCursor(`rr_${pool.clave}`)) || 0;
+    const elegido = cands.find((c) => c.id > ultimo) || cands[0];
+    await config.setCursor(`rr_${pool.clave}`, elegido.id);
+    return elegido;
+  }
+  return null;
+}
+
 async function emitLead(leadId) {
   if (!ctx.io) return;
   const [rows] = await ctx.pool.execute('SELECT * FROM leads WHERE id = ?', [leadId]);
@@ -223,7 +268,9 @@ const TOOLS = [
     async run({ lead_id, texto }) {
       const t = String(texto || '').trim();
       if (!t) fail('La nota está vacía');
-      if (!(await getLeadRow(lead_id))) fail(`No existe el lead #${lead_id}`);
+      const leadNota = await getLeadRow(lead_id);
+      if (!leadNota) fail(`No existe el lead #${lead_id}`);
+      await asegurarNoProtegido(leadNota);
       const [r] = await ctx.pool.execute(
         'INSERT INTO notas_internas (lead_id, texto, usuario, user_id, timestamp) VALUES (?, ?, ?, ?, NOW())',
         [lead_id, `🤖 ${t.slice(0, 600)}`, ctx.agentUser.name, ctx.agentUser.id]);
@@ -251,6 +298,7 @@ const TOOLS = [
       if (`${fecha} ${hora}` <= ahora.iso) fail(`La fecha tiene que ser posterior a ${ahora.iso} (hora Argentina)`);
       const lead = await getLeadRow(lead_id);
       if (!lead) fail(`No existe el lead #${lead_id}`);
+      await asegurarNoProtegido(lead);
       const [dup] = await ctx.pool.execute(
         'SELECT id FROM recordatorios WHERE lead_id = ? AND completado = 0 AND fecha = ? LIMIT 1', [lead_id, fecha]);
       if (dup.length) fail(`El lead ya tiene un recordatorio pendiente para ${fecha} (#${dup[0].id})`);
@@ -279,6 +327,7 @@ const TOOLS = [
     async run({ user_id, mensaje, lead_id }) {
       const [u] = await ctx.pool.execute('SELECT id, active FROM users WHERE id = ?', [user_id]);
       if (!u.length || !u[0].active) fail(`El usuario #${user_id} no existe o está inactivo`);
+      if (lead_id) await asegurarNoProtegido(await getLeadRow(lead_id));
       await notify(user_id, String(mensaje).slice(0, 300), lead_id);
       return { ok: true };
     },
@@ -302,6 +351,7 @@ const TOOLS = [
       const lead = await getLeadRow(lead_id);
       if (!lead) fail(`No existe el lead #${lead_id}`);
       if (lead.estado === 'rechazado_supervisor') fail('El lead está rechazado por supervisor: solo lo cambia un gerente');
+      await asegurarNoProtegido(lead);
       if (lead.estado === estado) return { ok: true, sin_cambios: true };
       await ctx.pool.execute('UPDATE leads SET estado = ?, last_status_change = NOW() WHERE id = ?', [estado, lead_id]);
       await logHistory(lead_id, 'Estado', lead.estado, estado);
@@ -316,24 +366,24 @@ const TOOLS = [
   {
     name: 'reassign_lead',
     readOnly: false,
-    description: 'Reasigna el lead a otro vendedor activo. Registra el log de reasignación, el historial y avisa a los dos vendedores.',
+    description: 'Reasigna el lead a OTRO vendedor. No elegís a quién: el sistema toma el próximo vendedor activo del mismo equipo por round robin (nunca el actual). Registra el log de reasignación, el historial y avisa a los dos vendedores.',
     input_schema: {
       type: 'object',
       properties: {
         lead_id: { type: 'integer' },
-        to_user_id: { type: 'integer' },
         motivo: { type: 'string', maxLength: 300 },
       },
-      required: ['lead_id', 'to_user_id', 'motivo'],
+      required: ['lead_id', 'motivo'],
     },
-    async run({ lead_id, to_user_id, motivo }) {
+    async run({ lead_id, motivo }) {
       const lead = await getLeadRow(lead_id);
       if (!lead) fail(`No existe el lead #${lead_id}`);
       if (ESTADOS_CERRADOS.includes(lead.estado)) fail(`El lead está en "${lead.estado}", no se reasigna`);
-      if (lead.assigned_to === to_user_id) return { ok: true, sin_cambios: true };
-      const [u] = await ctx.pool.execute(
-        "SELECT id, name FROM users WHERE id = ? AND role = 'vendedor' AND active = 1", [to_user_id]);
-      if (!u.length) fail(`#${to_user_id} no es un vendedor activo`);
+      await asegurarNoProtegido(lead);
+      const elegido = await proximoVendedorRoundRobin(lead);
+      if (!elegido) fail('No hay otro vendedor activo para reasignar');
+      const to_user_id = elegido.id;
+      const u = [elegido];
       await ctx.pool.execute(
         `UPDATE leads SET assigned_to = ?, assigned_at = NOW(), accepted_at = NULL,
                 reassignment_count = COALESCE(reassignment_count, 0) + 1,
@@ -378,6 +428,7 @@ TOOLS.push({
     const lead = await getLeadRow(lead_id);
     if (!lead) fail(`No existe el lead #${lead_id}`);
     if (ESTADOS_CERRADOS.includes(lead.estado)) fail(`El lead está en "${lead.estado}": no se le escribe`);
+    await asegurarNoProtegido(lead);
 
     const tel = digits(lead.telefono).slice(-10);
     const [ult] = await ctx.pool.execute(
